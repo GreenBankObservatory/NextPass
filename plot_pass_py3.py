@@ -1,27 +1,21 @@
-# -*- coding: utf-8 -*-
-from __future__ import print_function
 import sys
-import warnings
-warnings.filterwarnings('ignore', category=DeprecationWarning, module='matplotlib')
-try:
-    from numpy import VisibleDeprecationWarning
-    warnings.filterwarnings('ignore', category=VisibleDeprecationWarning)
-except ImportError:
-    pass
 import matplotlib.pyplot as plt
 import numpy as np
-from datetime import datetime
-from NextPass import GetNextPass, MAX_AZ_RATE, MAX_EL_RATE, UTC
+from datetime import datetime, timezone
+from NextPass import GetNextPass, MAX_AZ_RATE, MAX_EL_RATE
+
 def plot_pass(ephem_file, target_name, min_el=5.0, trange_hrs=24.0):
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     rtn = GetNextPass(ephem_file, target_name, min_el, now, trange_hrs)
-    print("Rise:  {0} Az={1:.1f} El={2:.1f}".format(rtn.start_time(), rtn.start_az(), rtn.start_el()))
-    print("Mid:   {0} Az={1:.1f} El={2:.1f}".format(rtn.midpoint_time(), rtn.midpoint_az(), rtn.midpoint_el()))
-    print("Set:   {0} Az={1:.1f} El={2:.1f}".format(rtn.end_time(), rtn.end_az(), rtn.end_el()))
-    print("Duration: {0:.0f}s  Wrap: {1}".format(rtn.pass_duration(), rtn.which_wrap()))
+
+    print(f"Rise:  {rtn.start_time()} Az={rtn.start_az():.1f} El={rtn.start_el():.1f}")
+    print(f"Mid:   {rtn.midpoint_time()} Az={rtn.midpoint_az():.1f} El={rtn.midpoint_el():.1f}")
+    print(f"Set:   {rtn.end_time()} Az={rtn.end_az():.1f} El={rtn.end_el():.1f}")
+    print(f"Duration: {rtn.pass_duration():.0f}s  Wrap: {rtn.which_wrap()}")
     print()
     print("Commands:")
     rtn.print_commands()
+
     # Unpack pre-computed trajectory
     traj = rtn.trajectory
     secs = traj['secs']
@@ -29,8 +23,10 @@ def plot_pass(ephem_file, target_name, min_el=5.0, trange_hrs=24.0):
     els = traj['el']
     az_rates = traj['az_rate']
     el_rates = traj['el_rate']
+
     fig = plt.figure(figsize=(15, 9))
-    fig.suptitle("{0} -- {1} UTC".format(target_name, rtn.start_time().strftime('%Y-%m-%d %H:%M:%S')))
+    fig.suptitle(f"{target_name} — {rtn.start_time().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+
     # Helper to shade violation regions on an axis
     t0 = rtn.start_time()
     def shade_violations(ax):
@@ -43,23 +39,26 @@ def plot_pass(ephem_file, target_name, min_el=5.0, trange_hrs=24.0):
         unique = [(h, l) for h, l in zip(handles, labels) if l not in seen and not seen.add(l)]
         if unique:
             ax.legend(*zip(*unique))
+
     # Row 1: El vs Time
     ax1 = fig.add_subplot(2, 3, 1)
     ax1.plot(secs, els)
-    ax1.axhline(y=min_el, color='r', linestyle='--', label='Min El ({0})'.format(min_el))
+    ax1.axhline(y=min_el, color='r', linestyle='--', label=f'Min El ({min_el}°)')
     ax1.set_xlabel('Seconds from rise')
-    ax1.set_ylabel('Elevation (deg)')
+    ax1.set_ylabel('Elevation (°)')
     ax1.set_title('Elevation vs Time')
     shade_violations(ax1)
     ax1.grid(True)
+
     # Row 1: Az vs Time
     ax2 = fig.add_subplot(2, 3, 2)
     ax2.plot(secs, azs)
     ax2.set_xlabel('Seconds from rise')
-    ax2.set_ylabel('Azimuth (deg)')
+    ax2.set_ylabel('Azimuth (°)')
     ax2.set_title('Azimuth vs Time')
     shade_violations(ax2)
     ax2.grid(True)
+
     # Row 1: Polar plot (az/el)
     ax_polar = fig.add_subplot(2, 3, 3, projection='polar')
     az_rad = np.radians(azs)
@@ -68,32 +67,36 @@ def plot_pass(ephem_file, target_name, min_el=5.0, trange_hrs=24.0):
     ax_polar.plot(az_rad[-1], els[-1], 'rs', markersize=8, label='Set')
     ax_polar.set_theta_zero_location('N')
     ax_polar.set_theta_direction(-1)
-    ax_polar.set_title('\nAz/El Polar')
+    ax_polar.set_title('Az/El Polar', pad=15)
     ax_polar.legend(loc='lower right')
+
     # Row 2: El rate vs Time
     ax3 = fig.add_subplot(2, 3, 4)
     ax3.plot(secs, el_rates)
     ax3.axhline(y=0, color='k', linestyle='-', linewidth=0.5)
-    ax3.axhline(y=MAX_EL_RATE, color='r', linestyle='--', label='Max ({0} deg/s)'.format(MAX_EL_RATE))
+    ax3.axhline(y=MAX_EL_RATE, color='r', linestyle='--', label=f'Max ({MAX_EL_RATE}°/s)')
     ax3.axhline(y=-MAX_EL_RATE, color='r', linestyle='--')
     ax3.set_xlabel('Seconds from rise')
-    ax3.set_ylabel('El Rate (deg/s)')
+    ax3.set_ylabel('El Rate (°/s)')
     ax3.set_title('Elevation Rate vs Time')
     shade_violations(ax3)
     ax3.grid(True)
+
     # Row 2: Az rate vs Time
     ax4 = fig.add_subplot(2, 3, 5)
     ax4.plot(secs, az_rates)
     ax4.axhline(y=0, color='k', linestyle='-', linewidth=0.5)
-    ax4.axhline(y=MAX_AZ_RATE, color='r', linestyle='--', label='Max ({0} deg/s)'.format(MAX_AZ_RATE))
+    ax4.axhline(y=MAX_AZ_RATE, color='r', linestyle='--', label=f'Max ({MAX_AZ_RATE}°/s)')
     ax4.axhline(y=-MAX_AZ_RATE, color='r', linestyle='--')
     ax4.set_xlabel('Seconds from rise')
-    ax4.set_ylabel('Az Rate (deg/s)')
+    ax4.set_ylabel('Az Rate (°/s)')
     ax4.set_title('Azimuth Rate vs Time')
     shade_violations(ax4)
     ax4.grid(True)
+
     plt.tight_layout()
     plt.show()
+
 if __name__ == "__main__":
     ephem_file = sys.argv[1] if len(sys.argv) > 1 else 'test_ephem.txt'
     target_name = sys.argv[2] if len(sys.argv) > 2 else 'target'

@@ -4,7 +4,7 @@ Compute satellite/target pass trajectories from pre-computed az/el ephemeris fil
 
 ## Files
 
-- `NextPass_ephem.py` — Core module. Parses ephemeris files, finds passes, checks rate limits, generates commands.
+- `NextPass.py` — Core module. Parses ephemeris files, finds passes, checks rate limits, generates commands.
 - `plot_pass.py` — Plotting script. Visualizes pass trajectory, rates, violations, and trackable windows.
 
 ## Ephemeris Format
@@ -36,13 +36,13 @@ NAME = LRO
 ...
 ```
  
-RA/DEC coordinates are automatically converted to AzEl using the observer location (defined at the top of `NextPass_ephem.py`). Both date formats (`2026-03-20` and `2026-Feb-27`) are supported.
+RA/DEC coordinates are automatically converted to AzEl using the observer location (defined at the top of `NextPass.py`). Both date formats (`2026-03-20` and `2026-Feb-27`) are supported.
 
 The ephemeris can span beyond the rise and set times (include negative elevations). The module will find the actual horizon crossings and rate allowable trajectories.
 
 ## Dependencies
 
-`NextPass_ephem.py` requires `astropy` for RA/DEC to AzEl coordinate conversion (only loaded when processing J2000 ephemeris files). The plotting script additionally needs `matplotlib` and `numpy`.
+`NextPass.py` requires `astropy` for RA/DEC to AzEl coordinate conversion (only loaded when processing J2000 ephemeris files). The plotting script additionally needs `matplotlib` and `numpy`.
 
 ```
 pip install matplotlib numpy
@@ -51,10 +51,10 @@ pip install matplotlib numpy
 ## Command Line Usage
 
 ```bash
-python NextPass_ephem.py ephemeris.txt TargetName
+python NextPass.py ephemeris.txt TargetName
 
 # Custom minimum elevation and uptime range
-python NextPass_ephem.py ephemeris.txt TargetName --min-el 5.0 --range 24.0
+python NextPass.py ephemeris.txt TargetName --min-el 5.0 --range 24.0
 ```
 
 Example output:
@@ -91,7 +91,7 @@ Produces a 5-panel figure (`pass_plot.png`) with elevation vs time, azimuth vs t
 
 ```python
 from datetime import datetime, timezone
-from NextPass_ephem import GetNextPass
+from NextPass import GetNextPass
 
 now = datetime.now(timezone.utc)
 rtn = GetNextPass('ephemeris.txt', 'TargetName', 5.0, now, 24.0)
@@ -129,7 +129,7 @@ Each trackable window produces three commands which can be executed by AstrID to
 For more granularity, AstrID script could iterate the trackable windows directly rather than parsing strings:
 
 ```python
-from NextPass_ephem import GetNextPass
+from NextPass import GetNextPass
 
 rtn = GetNextPass('ephemeris.txt', 'TargetName', 5.0, now, 24.0)
 
@@ -193,7 +193,7 @@ rtn = GetNextPass('ephemeris.txt', 'TargetName', 5.0, now, 24.0,
 
 ## Telescope Location
  
-The observer location is defined as module-level constants at the top of `NextPass_ephem.py`:
+The observer location is defined as module-level constants at the top of `NextPass.py`:
  
 ```python
 OBSERVER_LAT = 38.050417
