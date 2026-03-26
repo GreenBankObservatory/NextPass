@@ -1,4 +1,22 @@
-from datetime import datetime, timedelta, timezone
+# -*- coding: utf-8 -*-
+from __future__ import print_function
+from datetime import datetime, timedelta, tzinfo
+
+
+# UTC tzinfo singleton (Python 2.7 has no datetime.timezone)
+class _UTC(tzinfo):
+    ZERO = timedelta(0)
+
+    def utcoffset(self, dt):
+        return self.ZERO
+
+    def tzname(self, dt):
+        return "UTC"
+
+    def dst(self, dt):
+        return self.ZERO
+
+UTC = _UTC()
 
 
 # Default antenna rate limits (deg/sec)
@@ -50,7 +68,7 @@ class NextPass:
 
     def time_until_rise(self, when=None):
         if when is None:
-            when = datetime.now(timezone.utc)
+            when = datetime.now(UTC)
         return self.rise_t - when
 
     def setmidpt(self, t, azz, ell):
@@ -77,10 +95,10 @@ class NextPass:
         for ws, we in self.trackable_windows:
             az, el = self._orbit.SatPositionAt(ws)
             dur = (we - ws).total_seconds()
-            commands.append(f'Slew(Location("AzEl", {az:.1f}, {el:.1f}))')
-            commands.append(f"WaitFor('{ws.strftime('%H:%M:%S')}')")
+            commands.append('Slew(Location("AzEl", {0:.1f}, {1:.1f}))'.format(az, el))
+            commands.append("WaitFor('{0}')".format(ws.strftime('%H:%M:%S')))
             commands.append(
-                f'Track(Location("AzEl", {az:.1f}, {el:.1f}), None, {dur:.0f})'
+                'Track(Location("AzEl", {0:.1f}, {1:.1f}), None, {2:.0f})'.format(az, el, dur)
             )
         return commands
 
@@ -222,7 +240,7 @@ def parse_ephemeris(filename, observer_lat=OBSERVER_LAT, observer_lon=OBSERVER_L
             dt = _parse_datetime(parts[0], parts[1])
             if dt is None:
                 continue
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
             az = sexagesimal_to_decimal(parts[2])
             el = sexagesimal_to_decimal(parts[3])
             points.append((dt, az, el))
@@ -238,7 +256,7 @@ def parse_ephemeris(filename, observer_lat=OBSERVER_LAT, observer_lon=OBSERVER_L
             dt = _parse_datetime(parts[0], parts[1])
             if dt is None:
                 continue
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
             ra = hms_to_degrees(parts[2])
             dec = sexagesimal_to_decimal(parts[3])
             times_utc.append(dt)
@@ -253,7 +271,7 @@ def parse_ephemeris(filename, observer_lat=OBSERVER_LAT, observer_lon=OBSERVER_L
             for dt, az, el in zip(times_utc, az_list, el_list):
                 points.append((dt, az, el))
     else:
-        raise Exception(f"Unknown COORDMODE: {coordmode}")
+        raise Exception("Unknown COORDMODE: {0}".format(coordmode))
 
     return points
 
@@ -285,7 +303,7 @@ class OrbitPasses:
         self.name = name
         self.points = parse_ephemeris(ephem_file)
         if not self.points:
-            raise Exception(f"No data points found in {ephem_file}")
+            raise Exception("No data points found in {0}".format(ephem_file))
 
     def SatPositionAt(self, t):
         """Return (az_deg, el_deg) at datetime t via interpolation."""
@@ -344,7 +362,7 @@ class OrbitPasses:
             violations: list of dicts with 'start', 'end', 'peak_az_rate',
                         'peak_el_rate', 'reason' for each violation window.
             trackable_windows: list of (start, end) tuples where rates are
-                               within limits — the safe windows for tracking.
+                               within limits -- the safe windows for tracking.
         """
         duration = (end_t - start_t).total_seconds()
         n_samples = max(int(duration / sample_sec), 2)
@@ -408,9 +426,9 @@ class OrbitPasses:
         for v in merged:
             reasons = []
             if v['peak_az_rate'] > max_az_rate:
-                reasons.append(f"az_rate={v['peak_az_rate']:.4f} > {max_az_rate}")
+                reasons.append("az_rate={0:.4f} > {1}".format(v['peak_az_rate'], max_az_rate))
             if v['peak_el_rate'] > max_el_rate:
-                reasons.append(f"el_rate={v['peak_el_rate']:.4f} > {max_el_rate}")
+                reasons.append("el_rate={0:.4f} > {1}".format(v['peak_el_rate'], max_el_rate))
             v['reason'] = ', '.join(reasons)
             violations.append(v)
 
@@ -476,7 +494,7 @@ def GetNextPass(ephem_file, name, minEl, now=None, trange_hrs=12.0,
     if there were issues.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     orbit = OrbitPasses(ephem_file, name)
     points = orbit.points
@@ -532,24 +550,24 @@ def GetNextPass(ephem_file, name, minEl, now=None, trange_hrs=12.0,
     if violations:
         rtn.trackable_windows = trackable_windows
 
-        msg = f"WARNING: Antenna rate limits exceeded during pass for {name}\n"
-        msg += f"  Pass: {risetime.strftime('%H:%M:%S')} - {settime.strftime('%H:%M:%S')} UTC\n"
-        msg += f"  Limits: az_rate={max_az_rate} deg/s, el_rate={max_el_rate} deg/s\n"
-        msg += f"\n  Violations ({len(violations)}):\n"
+        msg = "WARNING: Antenna rate limits exceeded during pass for {0}\n".format(name)
+        msg += "  Pass: {0} - {1} UTC\n".format(risetime.strftime('%H:%M:%S'), settime.strftime('%H:%M:%S'))
+        msg += "  Limits: az_rate={0} deg/s, el_rate={1} deg/s\n".format(max_az_rate, max_el_rate)
+        msg += "\n  Violations ({0}):\n".format(len(violations))
         for i, v in enumerate(violations, 1):
-            msg += f"    {i}. {v['start'].strftime('%H:%M:%S')} - {v['end'].strftime('%H:%M:%S')} "
-            msg += f"({v['reason']})\n"
-        msg += f"\n  Proposed trackable windows ({len(trackable_windows)}):\n"
+            msg += "    {0}. {1} - {2} ".format(i, v['start'].strftime('%H:%M:%S'), v['end'].strftime('%H:%M:%S'))
+            msg += "({0})\n".format(v['reason'])
+        msg += "\n  Proposed trackable windows ({0}):\n".format(len(trackable_windows))
         if trackable_windows:
             for i, (ws, we) in enumerate(trackable_windows, 1):
                 dur = (we - ws).total_seconds()
                 s_az, s_el = orbit.SatPositionAt(ws)
                 e_az, e_el = orbit.SatPositionAt(we)
-                msg += f"    {i}. TRACK {ws.strftime('%H:%M:%S')} - {we.strftime('%H:%M:%S')} "
-                msg += f"({dur:.0f}s) "
-                msg += f"Az={s_az:.1f}->{e_az:.1f} El={s_el:.1f}->{e_el:.1f}\n"
+                msg += "    {0}. TRACK {1} - {2} ".format(i, ws.strftime('%H:%M:%S'), we.strftime('%H:%M:%S'))
+                msg += "({0:.0f}s) ".format(dur)
+                msg += "Az={0:.1f}->{1:.1f} El={2:.1f}->{3:.1f}\n".format(s_az, e_az, s_el, e_el)
         else:
-            msg += "    ** No trackable windows — pass exceeds rate limits "
+            msg += "    ** No trackable windows -- pass exceeds rate limits "
             msg += "or antenna cannot slew to reachable positions **\n"
 
         rtn.rate_warning = msg
@@ -565,7 +583,7 @@ def GetNextPass(ephem_file, name, minEl, now=None, trange_hrs=12.0,
 
 def print_summary(rtn):
     """Print pass summary info and commands."""
-    print("Now:", datetime.now(timezone.utc))
+    print("Now:", datetime.now(UTC))
     print("Time until rise:", rtn.time_until_rise(None))
     print("Time/Target of rise", rtn.start_time(), rtn.start_az(), rtn.start_el())
     print("Pass at midpoint", rtn.midpoint_time(), rtn.midpoint_az(), rtn.midpoint_el())
@@ -573,7 +591,7 @@ def print_summary(rtn):
     print("Pass duration", rtn.pass_duration())
     print("Az wrap:", rtn.which_wrap())
     if rtn.has_violations():
-        print("Rate limits EXCEEDED — see warnings above")
+        print("Rate limits EXCEEDED -- see warnings above")
     else:
         print("Rate limits OK")
     print()
