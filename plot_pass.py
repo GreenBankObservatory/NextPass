@@ -3,6 +3,7 @@ from __future__ import print_function
 import sys
 import warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='matplotlib')
+warnings.filterwarnings('ignore', message='.*dubious year.*')
 try:
     from numpy import VisibleDeprecationWarning
     warnings.filterwarnings('ignore', category=VisibleDeprecationWarning)
@@ -12,9 +13,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from datetime import datetime
 from NextPass import GetNextPass, MAX_AZ_RATE, MAX_EL_RATE, UTC
-def plot_pass(ephem_file, target_name, min_el=5.0, trange_hrs=24.0):
-    now = datetime.now(UTC)
-    rtn = GetNextPass(ephem_file, target_name, min_el, now, trange_hrs)
+def plot_pass(ephem_file, min_el=10.0, start=None, max_az_rate=MAX_AZ_RATE, max_el_rate=MAX_EL_RATE,
+              output=None):
+    rtn = GetNextPass(ephem_file, min_el, start, max_az_rate, max_el_rate)
     print("Rise:  {0} Az={1:.1f} El={2:.1f}".format(rtn.start_time(), rtn.start_az(), rtn.start_el()))
     print("Mid:   {0} Az={1:.1f} El={2:.1f}".format(rtn.midpoint_time(), rtn.midpoint_az(), rtn.midpoint_el()))
     print("Set:   {0} Az={1:.1f} El={2:.1f}".format(rtn.end_time(), rtn.end_az(), rtn.end_el()))
@@ -30,7 +31,7 @@ def plot_pass(ephem_file, target_name, min_el=5.0, trange_hrs=24.0):
     az_rates = traj['az_rate']
     el_rates = traj['el_rate']
     fig = plt.figure(figsize=(15, 9))
-    fig.suptitle("{0} -- {1} UTC".format(target_name, rtn.start_time().strftime('%Y-%m-%d %H:%M:%S')))
+    fig.suptitle("{0} -- {1} UTC".format(rtn._orbit.name, rtn.start_time().strftime('%Y-%m-%d %H:%M:%S')))
     # Helper to shade violation regions on an axis
     t0 = rtn.start_time()
     def shade_violations(ax):
@@ -95,6 +96,20 @@ def plot_pass(ephem_file, target_name, min_el=5.0, trange_hrs=24.0):
     plt.tight_layout()
     plt.show()
 if __name__ == "__main__":
-    ephem_file = sys.argv[1] if len(sys.argv) > 1 else 'test_ephem.txt'
-    target_name = sys.argv[2] if len(sys.argv) > 2 else 'target'
-    plot_pass(ephem_file, target_name)
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Plot satellite pass from ephemeris')
+    parser.add_argument('ephem_file', help='Ephemeris text file')
+    #parser.add_argument('name', nargs='?', default='target', help='Target name')
+    parser.add_argument('--min-el', type=float, default=10.0, help='Minimum elevation (deg)')
+    parser.add_argument('--start-time', default=None,
+                        help="'now', 'ephem', or YYYY-MM-DD HH:MM:SS (default: ephem start)")
+    parser.add_argument('--max-az-rate', type=float, default=MAX_AZ_RATE,
+                        help='Max azimuth rate deg/s (default: {0})'.format(MAX_AZ_RATE))
+    parser.add_argument('--max-el-rate', type=float, default=MAX_EL_RATE,
+                        help='Max elevation rate deg/s (default: {0})'.format(MAX_EL_RATE))
+    parser.add_argument('-o', '--output', default=None,
+                        help='Save plot to file instead of displaying')
+    args = parser.parse_args()
+
+    plot_pass(args.ephem_file, args.min_el, args.start_time, args.max_az_rate, args.max_el_rate, args.output)

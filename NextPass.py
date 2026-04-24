@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
 from datetime import datetime, timedelta, tzinfo
+from astropy.coordinates import EarthLocation
+import warnings
+from astropy.utils.iers import conf as iers_conf
+from astropy.coordinates import SkyCoord, EarthLocation, AltAz
+from astropy.time import Time
+import astropy.units as u
 
 
 # UTC tzinfo singleton (Python 2.7 has no datetime.timezone)
@@ -22,11 +28,23 @@ UTC = _UTC()
 # Default antenna rate limits (deg/sec)
 MAX_EL_RATE = 0.3
 MAX_AZ_RATE = 0.6
+RATE_LIMIT_BUFFER = 0.9
 
 # Observer location
-OBSERVER_LAT = 38.050417
-OBSERVER_LON = -81.104889
-OBSERVER_ELEV = 517.0
+site = EarthLocation.of_site("Green Bank Telescope")
+
+def _az_diff(a1, a0):
+    """Shortest signed difference a1 - a0 in degrees, wrapped to (-180, 180]."""
+    return (a1 - a0 + 180.0) % 360.0 - 180.0
+
+def _unwrap_az(az_list):
+    """Make an azimuth sequence continuous by removing 360-degree jumps."""
+    if not az_list:
+        return az_list
+    out = [az_list[0]]
+    for a in az_list[1:]:
+        out.append(out[-1] + _az_diff(a, out[-1] % 360.0))
+    return out
 
 
 class NextPass:
@@ -92,13 +110,14 @@ class NextPass:
         Returns a list of command strings.
         """
         commands = []
+        name = getattr(self._orbit, 'name', None) or 'target'
         for ws, we in self.trackable_windows:
             az, el = self._orbit.SatPositionAt(ws)
             dur = (we - ws).total_seconds()
             commands.append('Slew(Location("AzEl", {0:.1f}, {1:.1f}))'.format(az, el))
             commands.append("WaitFor('{0}')".format(ws.strftime('%H:%M:%S')))
             commands.append(
-                'Track(Location("AzEl", {0:.1f}, {1:.1f}), None, {2:.0f})'.format(az, el, dur)
+                'Track("{0}", None, {1:.0f})'.format(name, dur)
             )
         return commands
 
@@ -180,13 +199,8 @@ def _radec_to_azel(times_utc, ra_degs, dec_degs, lat, lon, elev_m):
 
     Returns lists of (az_deg, el_deg).
     """
-    import warnings
     warnings.filterwarnings('ignore', module='astropy')
-    from astropy.utils.iers import conf as iers_conf
     iers_conf.auto_download = False
-    from astropy.coordinates import SkyCoord, EarthLocation, AltAz
-    from astropy.time import Time
-    import astropy.units as u
 
     observer = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=elev_m * u.m)
 
@@ -202,16 +216,19 @@ def _radec_to_azel(times_utc, ra_degs, dec_degs, lat, lon, elev_m):
     return az_list, el_list
 
 
-def parse_ephemeris(filename, observer_lat=OBSERVER_LAT, observer_lon=OBSERVER_LON,
-                    observer_elev=OBSERVER_ELEV):
+def parse_ephemeris(filename, observer_lat=site.lat.deg, observer_lon=site.lon.deg,
+                    observer_elev=site.height.value):
     """Parse an ephemeris text file (azel or J2000 RA/DEC).
 
     Reads COORDMODE from the header to determine format.
     For J2000, converts RA/DEC to AzEl using the observer location.
 
-    Returns a list of (datetime_utc, az_deg, el_deg) tuples.
+    Returns a tuple of (points, ephem_name) where points is a list of
+    (datetime_utc, az_deg, el_deg) tuples and ephem_name is the NAME
+    from the header (or None if not present).
     """
     coordmode = 'azel'
+    ephem_name = None
     header_lines = []
     data_lines = []
 
@@ -223,9 +240,11 @@ def parse_ephemeris(filename, observer_lat=OBSERVER_LAT, observer_lon=OBSERVER_L
             if '=' in line:
                 key, val = line.split('=', 1)
                 key = key.strip().upper()
-                val = val.strip().lower()
+                val_raw = val.strip()
                 if key == 'COORDMODE':
-                    coordmode = val
+                    coordmode = val_raw.lower()
+                elif key == 'NAME':
+                    ephem_name = val_raw
                 header_lines.append(line)
                 continue
             data_lines.append(line)
@@ -273,7 +292,7 @@ def parse_ephemeris(filename, observer_lat=OBSERVER_LAT, observer_lon=OBSERVER_L
     else:
         raise Exception("Unknown COORDMODE: {0}".format(coordmode))
 
-    return points
+    return points, ephem_name
 
 
 def interp_at(points, t):
@@ -290,7 +309,9 @@ def interp_at(points, t):
             if span == 0:
                 return az0, el0
             frac = (t - t0).total_seconds() / span
-            az = az0 + frac * (az1 - az0)
+            # Wrap-aware az interpolation: take the short way around the circle
+            az_delta = _az_diff(az1, az0)
+            az = (az0 + frac * az_delta) % 360.0
             el = el0 + frac * (el1 - el0)
             return az, el
     return points[-1][1], points[-1][2]
@@ -300,8 +321,10 @@ class OrbitPasses:
     """Load a pre-computed az/el ephemeris and provide position lookups."""
 
     def __init__(self, ephem_file, name=None):
-        self.name = name
-        self.points = parse_ephemeris(ephem_file)
+        points, ephem_name = parse_ephemeris(ephem_file)
+        # Prefer name from ephem file header; fall back to caller-supplied name
+        self.name = ephem_name or name
+        self.points = points
         if not self.points:
             raise Exception("No data points found in {0}".format(ephem_file))
 
@@ -314,7 +337,7 @@ class OrbitPasses:
         delta = timedelta(seconds=dt_sec)
         az0, el0 = interp_at(self.points, t - delta)
         az1, el1 = interp_at(self.points, t + delta)
-        az_rate = (az1 - az0) / (2.0 * dt_sec)
+        az_rate = _az_diff(az1, az0) / (2.0 * dt_sec)    # <-- changed
         el_rate = (el1 - el0) / (2.0 * dt_sec)
         return az_rate, el_rate
 
@@ -344,6 +367,8 @@ class OrbitPasses:
             az_rates.append(az_rate)
             el_rates.append(el_rate)
 
+        azs = _unwrap_az(azs)
+
         return {
             'times': times,
             'secs': secs,
@@ -354,27 +379,37 @@ class OrbitPasses:
         }
 
     def check_rate_limits(self, start_t, end_t, max_az_rate=MAX_AZ_RATE,
-                          max_el_rate=MAX_EL_RATE, sample_sec=1.0,
-                          min_window_sec=10.0):
-        """Check if antenna rate limits are exceeded during a time window.
+                          max_el_rate=MAX_EL_RATE, max_el_keyhole=80.0,
+                          sample_sec=1.0, min_window_sec=10.0):
+        """Check if antenna rate limits or keyhole are exceeded during a time window.
+
+        A violation occurs when the az or el rate exceeds its limit, or when
+        the elevation exceeds the keyhole (telescope cannot observe there).
 
         Returns:
             violations: list of dicts with 'start', 'end', 'peak_az_rate',
-                        'peak_el_rate', 'reason' for each violation window.
-            trackable_windows: list of (start, end) tuples where rates are
-                               within limits -- the safe windows for tracking.
+                        'peak_el_rate', 'peak_elev', 'reason' for each violation window.
+            trackable_windows: list of (start, end) tuples where rates and elevation
+                               are within limits -- the safe windows for tracking.
         """
+        # add buffer in case antena motion isnt full captured in the motion, ex. braking or accelerating
+        max_az_rate = max_az_rate * RATE_LIMIT_BUFFER
+        max_el_rate = max_el_rate * RATE_LIMIT_BUFFER
+
         duration = (end_t - start_t).total_seconds()
         n_samples = max(int(duration / sample_sec), 2)
         step = duration / n_samples
 
-        # Sample rates across the pass
+        # Sample rates and elevation across the pass
         exceeded = []
         for i in range(n_samples + 1):
             t = start_t + timedelta(seconds=i * step)
+            az, el = self.SatPositionAt(t)
             az_rate, el_rate = self.VelocityAt(t)
-            over = abs(az_rate) > max_az_rate or abs(el_rate) > max_el_rate
-            exceeded.append((t, over, az_rate, el_rate))
+            over = (abs(az_rate) > max_az_rate
+                    or abs(el_rate) > max_el_rate
+                    or el > max_el_keyhole)
+            exceeded.append((t, over, az_rate, el_rate, el))
 
         # Group contiguous violations into raw windows
         raw_violations = []
@@ -382,27 +417,32 @@ class OrbitPasses:
         v_start = None
         peak_az = 0.0
         peak_el = 0.0
+        peak_elev = 0.0
 
-        for t, over, az_r, el_r in exceeded:
+        for t, over, az_r, el_r, el in exceeded:
             if over and not in_violation:
                 in_violation = True
                 v_start = t
                 peak_az = abs(az_r)
                 peak_el = abs(el_r)
+                peak_elev = el
             elif over and in_violation:
                 peak_az = max(peak_az, abs(az_r))
                 peak_el = max(peak_el, abs(el_r))
+                peak_elev = max(peak_elev, el)
             elif not over and in_violation:
                 in_violation = False
                 raw_violations.append({
                     'start': v_start, 'end': t,
                     'peak_az_rate': peak_az, 'peak_el_rate': peak_el,
+                    'peak_elev': peak_elev,
                 })
 
         if in_violation:
             raw_violations.append({
                 'start': v_start, 'end': exceeded[-1][0],
                 'peak_az_rate': peak_az, 'peak_el_rate': peak_el,
+                'peak_elev': peak_elev,
             })
 
         # Merge violations separated by gaps shorter than min_window_sec
@@ -418,6 +458,8 @@ class OrbitPasses:
                                                      v['peak_az_rate'])
                     merged[-1]['peak_el_rate'] = max(merged[-1]['peak_el_rate'],
                                                      v['peak_el_rate'])
+                    merged[-1]['peak_elev'] = max(merged[-1]['peak_elev'],
+                                                  v['peak_elev'])
                 else:
                     merged.append(v.copy())
 
@@ -429,6 +471,8 @@ class OrbitPasses:
                 reasons.append("az_rate={0:.4f} > {1}".format(v['peak_az_rate'], max_az_rate))
             if v['peak_el_rate'] > max_el_rate:
                 reasons.append("el_rate={0:.4f} > {1}".format(v['peak_el_rate'], max_el_rate))
+            if v['peak_elev'] > max_el_keyhole:
+                reasons.append("elev={0:.1f} > keyhole {1}".format(v['peak_elev'], max_el_keyhole))
             v['reason'] = ', '.join(reasons)
             violations.append(v)
 
@@ -455,7 +499,7 @@ class OrbitPasses:
             gap_sec = (ws - prev_end).total_seconds()
 
             if gap_sec > 0:
-                az_slew_rate = abs(tgt_az - prev_az) / gap_sec
+                az_slew_rate = abs(_az_diff(tgt_az, prev_az)) / gap_sec   # <-- changed
                 el_slew_rate = abs(tgt_el - prev_el) / gap_sec
             else:
                 az_slew_rate = float('inf')
@@ -472,7 +516,7 @@ class OrbitPasses:
                     slew_time = (candidate - prev_end).total_seconds()
                     if slew_time <= 0:
                         continue
-                    az_sr = abs(cand_az - prev_az) / slew_time
+                    az_sr = abs(_az_diff(cand_az, prev_az)) / slew_time   
                     el_sr = abs(cand_el - prev_el) / slew_time
                     if az_sr <= max_az_rate and el_sr <= max_el_rate:
                         new_start = candidate
@@ -483,9 +527,7 @@ class OrbitPasses:
 
         return violations, feasible_windows
 
-
-def GetNextPass(ephem_file, name, minEl, now=None, trange_hrs=12.0,
-                max_az_rate=MAX_AZ_RATE, max_el_rate=MAX_EL_RATE):
+def GetNextPass(ephem_file, minEl, now=None, max_az_rate=MAX_AZ_RATE, max_el_rate=MAX_EL_RATE):
     """Find the next pass and check rate limits.
 
     Always returns a NextPass object. If rate limits are exceeded,
@@ -493,10 +535,21 @@ def GetNextPass(ephem_file, name, minEl, now=None, trange_hrs=12.0,
     and a warning is printed. Check rtn.has_violations() to see
     if there were issues.
     """
-    if now is None:
-        now = datetime.now(UTC)
+    orbit = OrbitPasses(ephem_file)
+    points = orbit.points
 
-    orbit = OrbitPasses(ephem_file, name)
+    # Resolve start time
+    if now is None or (isinstance(now, str) and now.strip().lower() == 'ephem'):
+        now = points[0][0]
+    elif isinstance(now, str) and now.strip().lower() == 'now':
+        now = datetime.now(UTC)
+    elif isinstance(now, str):
+        parsed = _parse_datetime(*now.split(' ', 1))
+        if parsed is None:
+            raise ValueError("Could not parse start time: '{0}'".format(now))
+        now = parsed.replace(tzinfo=UTC)
+
+    orbit = OrbitPasses(ephem_file)
     points = orbit.points
 
     # Find rise
@@ -550,7 +603,7 @@ def GetNextPass(ephem_file, name, minEl, now=None, trange_hrs=12.0,
     if violations:
         rtn.trackable_windows = trackable_windows
 
-        msg = "WARNING: Antenna rate limits exceeded during pass for {0}\n".format(name)
+        msg = "WARNING: Antenna rate limits exceeded during pass for {0}\n".format(orbit.name)
         msg += "  Pass: {0} - {1} UTC\n".format(risetime.strftime('%H:%M:%S'), settime.strftime('%H:%M:%S'))
         msg += "  Limits: az_rate={0} deg/s, el_rate={1} deg/s\n".format(max_az_rate, max_el_rate)
         msg += "\n  Violations ({0}):\n".format(len(violations))
@@ -584,11 +637,11 @@ def GetNextPass(ephem_file, name, minEl, now=None, trange_hrs=12.0,
 def print_summary(rtn):
     """Print pass summary info and commands."""
     print("Now:", datetime.now(UTC))
-    print("Time until rise:", rtn.time_until_rise(None))
-    print("Time/Target of rise", rtn.start_time(), rtn.start_az(), rtn.start_el())
+    print("Time until  (hh:mm:ss):", rtn.time_until_rise(None))
+    print("Time/Target of aquisition", rtn.start_time(), rtn.start_az(), rtn.start_el())
     print("Pass at midpoint", rtn.midpoint_time(), rtn.midpoint_az(), rtn.midpoint_el())
     print("Time/Target at set ", rtn.end_time(), rtn.end_az(), rtn.end_el())
-    print("Pass duration", rtn.pass_duration())
+    print("Pass duration (s)", rtn.pass_duration())
     print("Az wrap:", rtn.which_wrap())
     if rtn.has_violations():
         print("Rate limits EXCEEDED -- see warnings above")
@@ -604,11 +657,12 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Compute satellite pass from ephemeris')
     parser.add_argument('ephem_file', help='Ephemeris text file')
-    parser.add_argument('name', nargs='?', default='target', help='Target name')
+    #parser.add_argument('name', nargs='?', default='target', help='Target name')
     parser.add_argument('--min-el', type=float, default=10.0, help='Minimum elevation (deg)')
-    parser.add_argument('--range', type=float, default=24.0, dest='trange_hrs',
-                        help='Search range (hours)')
+    parser.add_argument("--start-time", default=None,
+                        help="Start time (YYYY-MM-DD HH:MM:SS UTC), 'now', "
+                             "or omit to use ephemeris start time")
     args = parser.parse_args()
 
-    rtn = GetNextPass(args.ephem_file, args.name, args.min_el, None, args.trange_hrs)
+    rtn = GetNextPass(args.ephem_file, args.min_el, args.start_time)
     print_summary(rtn)
