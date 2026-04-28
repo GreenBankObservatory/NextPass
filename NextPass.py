@@ -168,12 +168,14 @@ class NextPass:
 
 def sexagesimal_to_decimal(s):
     """Convert DD:MM:SS.s string to decimal degrees."""
-    parts = s.strip().split(':')
+    s = s.strip()
+    sign = -1 if s.startswith('-') else 1
+    s = s.lstrip('+-')
+    parts = s.split(':')
     d = float(parts[0])
     m = float(parts[1]) if len(parts) > 1 else 0.0
     sec = float(parts[2]) if len(parts) > 2 else 0.0
-    sign = -1 if d < 0 else 1
-    return sign * (abs(d) + m / 60.0 + sec / 3600.0)
+    return sign * (d + m / 60.0 + sec / 3600.0)
 
 
 def hms_to_degrees(s):
