@@ -217,6 +217,27 @@ def _radec_to_azel(times_utc, ra_degs, dec_degs, lat, lon, elev_m):
 
     return az_list, el_list
 
+def _gappt_to_azel(times_utc, ra_degs, dec_degs, lat, lon, elev_m):
+    """Convert lists of RA/DEC (degrees, GAPPT/apparent) to AzEl for an observer.
+
+    Returns lists of (az_deg, el_deg).
+    """
+    from astropy.coordinates import GCRS
+    warnings.filterwarnings('ignore', module='astropy')
+    iers_conf.auto_download = False
+
+    observer = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=elev_m * u.m)
+
+    az_list = []
+    el_list = []
+    for dt, ra, dec in zip(times_utc, ra_degs, dec_degs):
+        t = Time(dt, scale='utc')
+        coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame=GCRS(obstime=t))
+        altaz = coord.transform_to(AltAz(obstime=t, location=observer))
+        az_list.append(altaz.az.deg)
+        el_list.append(altaz.alt.deg)
+
+    return az_list, el_list
 
 def parse_ephemeris(filename, observer_lat=site.lat.deg, observer_lon=site.lon.deg,
                     observer_elev=site.height.value):
@@ -266,7 +287,7 @@ def parse_ephemeris(filename, observer_lat=site.lat.deg, observer_lon=site.lon.d
             el = sexagesimal_to_decimal(parts[3])
             points.append((dt, az, el))
 
-    elif coordmode in ('j2000', 'radec'):
+    elif coordmode in ('j2000', 'radec', 'gappt'):
         times_utc = []
         ra_degs = []
         dec_degs = []
@@ -285,14 +306,20 @@ def parse_ephemeris(filename, observer_lat=site.lat.deg, observer_lon=site.lon.d
             dec_degs.append(dec)
 
         if times_utc:
-            az_list, el_list = _radec_to_azel(
-                times_utc, ra_degs, dec_degs,
-                observer_lat, observer_lon, observer_elev
-            )
+            if coordmode == 'gappt':
+                az_list, el_list = _gappt_to_azel(
+                    times_utc, ra_degs, dec_degs,
+                    observer_lat, observer_lon, observer_elev
+                )
+            else:
+                az_list, el_list = _radec_to_azel(
+                    times_utc, ra_degs, dec_degs,
+                    observer_lat, observer_lon, observer_elev
+                )
             for dt, az, el in zip(times_utc, az_list, el_list):
                 points.append((dt, az, el))
     else:
-        raise Exception("Unknown COORDMODE: {0}".format(coordmode))
+        raise Exception("Unknown COORDMODE: {0} (expected azel, j2000, radec, or gappt)".format(coordmode))
 
     return points, ephem_name
 
